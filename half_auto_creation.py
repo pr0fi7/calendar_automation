@@ -16,7 +16,6 @@ from dotenv import load_dotenv, find_dotenv
 _ = load_dotenv(find_dotenv())
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# If modifying these scopes, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
@@ -57,10 +56,9 @@ def get_academic_week(week=True):
     # Set time zone to Europe/Brussels
     tz = pytz.timezone('Europe/Brussels')
 
-    # Get today's date in Europe/Brussels time zone
 
     if week:
-        today = datetime.now(tz).min + timedelta(days=6)  # Adjust days as needed
+        today = datetime.now(tz) + timedelta(days=6)  # Adjust days as needed
         # Compute start_of_week and end_of_week
         start_of_week = datetime.combine((today - timedelta(days=today.weekday())).date(), time.min)
         start_of_week = tz.localize(start_of_week)
@@ -137,24 +135,33 @@ def text_to_schedule(generated_schedule_text):
 
     lines = generated_schedule_text.strip().split('\n')
     for line in lines:
-        # Skip empty lines
         if not line.strip():
             continue
 
-        # Remove any unwanted characters from the line
         line = line.strip()
 
+        if "Structure, Behaviour and Sustainability of Materials" in line:
+            line = line.replace("Structure, Behaviour and Sustainability of Materials", "Structure Behaviour and Sustainability of Materials")
+
         # Skip lines that do not match the expected format
-        if len(line.split(',')) != 4:
+        if len(line.split(',')) > 5:    
             print(f"Skipping line due to incorrect format: {line}")
             continue
 
         # Split line by commas
         parts = [part.strip() for part in line.split(',')]
-        if len(parts) != 4:
+        if len(parts) > 5:
             print(f"Skipping line due to incorrect format: {line}")
             continue
-        day_str, start_time_str, end_time_str, activity = parts
+
+        if len(parts) == 5:
+            day_str, start_time_str, end_time_str, activity, location = parts
+        elif len(parts) == 4:
+            day_str, start_time_str, end_time_str, activity = parts
+            location = ''  # Default to empty string if location is not provided
+        else:
+            print(f"Skipping line due to incorrect format: {line}")
+            continue
 
         # Clean up day string (remove asterisks, if any)
         day_str = day_str.strip('*').strip()
@@ -188,47 +195,49 @@ def text_to_schedule(generated_schedule_text):
         event = {
             'start': start_datetime,
             'end': end_datetime,
-            'summary': activity
+            'summary': activity,
+            'location': location
+            
         }
 
         events.append(event)
 
     return events
 
-
 def delete_events_for_week(creds, week=True):
     """
-    Deletes all events in the user's primary calendar for the current week.
+    Deletes all events in the user's primary calendar for the next week.
     """
     service = build("calendar", "v3", credentials=creds)
-    # Get today's date without time
     today = date.today()
-
+    
     if week:
-
-        # Set start of the week to Monday 00:00
-        start_of_week = datetime.combine(today - timedelta(days=today.weekday()), time.min)
-
-        # Set end of the week to next Monday 00:00
-        end_of_week = datetime.combine(start_of_week.date() + timedelta(days=7), time.max)
+        # Calculate next week's Monday:
+        # today.weekday() returns 0 for Monday, so if today is Monday, add 7 days.
+        days_until_next_monday = (7 - today.weekday()) if today.weekday() != 0 else 7
+        start_of_next_week = datetime.combine(today + timedelta(days=days_until_next_monday), time.min)
+        # Next week's Sunday end-of-day:
+        end_of_next_week = datetime.combine(start_of_next_week.date() + timedelta(days=6), time.max)
     else:
-        start_of_week = datetime.now()
-         # Set start of the week to Monday 00:00
-        real_start = datetime.combine(today - timedelta(days=today.weekday()), time.min)
-        # Set end of the week to next Monday 00:00
-        end_of_week = datetime.combine(real_start.date() + timedelta(days=7), time.max)
-
+        # Use the current week (if needed)
+        start_of_week = datetime.combine(today - timedelta(days=today.weekday()), time.min)
+        end_of_week = datetime.combine(start_of_week.date() + timedelta(days=6), time.max)
+    
+    # Use the appropriate variables based on the chosen week.
+    time_min = start_of_next_week.isoformat() + 'Z' if week else start_of_week.isoformat() + 'Z'
+    time_max = end_of_next_week.isoformat() + 'Z' if week else end_of_week.isoformat() + 'Z'
+    
     events_result = service.events().list(
         calendarId="primary",
-        timeMin=start_of_week.isoformat() + 'Z',
-        timeMax=end_of_week.isoformat() + 'Z',
+        timeMin=time_min,
+        timeMax=time_max,
         singleEvents=True,
         orderBy='startTime'
     ).execute()
     events = events_result.get('items', [])
-
+    
     if not events:
-        print("No events to delete for the current week.")
+        print("No events to delete for the specified week.")
         return
 
     for event in events:
@@ -257,12 +266,12 @@ def insert_events(creds, events):
         'Work': '11',   
         '3D Modeling': '2',       # Lavender
         'My Projects': '9',         # Cyan
-        'Sleep': '3',             # Purple
         'Default': '10'           # Light Green
     }
 
     for event in events:
         activity = event['summary']
+        location = event.get('location', '')
         color_id = color_map.get(activity, color_map['Default'])
 
         event_body = {
@@ -275,7 +284,8 @@ def insert_events(creds, events):
                 'dateTime': event['end'].isoformat(),
                 'timeZone': 'Europe/Brussels',
             },
-            'colorId': color_id
+            'colorId': color_id,
+            'location': location
         }
         try:
             service.events().insert(calendarId='primary', body=event_body).execute()
